@@ -11,18 +11,27 @@ Nie jest to klasyczny Git Flow, w którym release powstaje z `develop`.
 > oznaczone jako **docelowe** są procedurą do wdrożenia po skonfigurowaniu
 > środowisk, uprawnień i pipeline'ów, a nie opisem działającej automatyzacji.
 
-```text
-origin/main
-    ├── feature/EF-6 ── PR ──> develop ──> testy DEV
-    ├── feature/EF-7 ── PR ──> develop ──> testy DEV (nie w tym wydaniu)
-    └── release/0.4.0 <── PR feature/EF-6 (wybrane zadanie)
-             │
-             ├── tag u0.4.0 ──> artefakt A ──> UAT ──> akceptacja
-             └── PR (merge commit) ──> main ── tag p0.4.0
-                                               │
-                                               └── artefakt A ──> PROD
-    main ──> synchronizacja develop ──> ponowne testy EF-7
+## Mapa procesu
+
+```mermaid
+flowchart LR
+    M["main: baza zadań i wydań"] --> F["feature/* lub fix/*"]
+    F -->|"PR: test zadania"| D["develop / DEV"]
+    M --> R["release/0.4.0"]
+    F -->|"PR: tylko wybrane zadania"| R
+    R --> U["u0.4.0"]
+    U --> A["Artefakt o digescie A"]
+    A --> QA["UAT: testy i akceptacja"]
+    QA --> P["PR release → main: merge commit"]
+    P --> T["p0.4.0"]
+    T -->|"Promocja digestu A, bez nowego builda"| PROD["PROD"]
+    PROD --> S["Synchronizacja develop z main"]
+    S --> D
 ```
+
+**Przykład:** `feature/EF-6` i `feature/EF-7` mogą być testowane na DEV
+jednocześnie, ale do `release/0.4.0` trafia tylko `EF-6`. Po wydaniu `EF-7`
+wraca na DEV ze swojej gałęzi.
 
 | Gałąź / tag | Znaczenie |
 | --- | --- |
@@ -36,6 +45,11 @@ origin/main
 W przykładach użyto wersji `0.4.0` (format `MAJOR.MINOR.PATCH`). Tag `u0.4.0`
 oznacza źródło artefaktu zaakceptowanego na UAT, a `p0.4.0` potwierdza
 promocję wydania do `main`. Nie twórz ich przed odpowiednimi bramkami.
+
+**SHA** identyfikuje commit, **drzewo plików** jego zawartość, a **digest
+artefaktu** konkretny zbudowany pakiet lub obraz. Dwa różne commity mogą mieć
+to samo drzewo plików, ale ponowne zbudowanie takiego kodu nie gwarantuje
+identycznego artefaktu.
 
 ## Przed pierwszym wydaniem z tagami (docelowo)
 
@@ -85,6 +99,8 @@ powiódł, zatrzymaj proces zamiast używać potencjalnie starego `origin/main`.
 
 Test na DEV nie oznacza, że zadanie weszło do wydania. `feature/EF-7` może
 być już na `develop`, ale nie znaleźć się w `release/0.4.0`.
+Do otwarcia PR na GitHubie wystarczy wypchnięta gałąź; nie trzeba przełączać
+jej w drugim lokalnym katalogu ani worktree.
 
 **Nie merguj `develop` do gałęzi zadaniowej**: w przeciwnym razie do wydania
 mogą trafić cudze, niewydane zadania. Przed PR do release uaktualnij zadanie
@@ -193,6 +209,24 @@ builda z `p0.4.0` nie spełnia tego warunku. Gdy kontrola drzew lub digestów
 nie przechodzi, wstrzymaj deployment; nie naprawiaj sytuacji przez
 przesunięcie tagu.
 
+```mermaid
+sequenceDiagram
+    participant RM as Release Manager
+    participant Git
+    participant CI as Rejestr artefaktów / CI
+    participant UAT
+    participant PROD
+    RM->>Git: tag u0.4.0 na commicie U
+    Git->>CI: build ze źródeł U
+    CI-->>RM: digest A
+    CI->>UAT: wdrożenie A
+    UAT-->>RM: testy i akceptacja
+    RM->>Git: PR do main (commit P) i tag p0.4.0
+    RM->>Git: sprawdź drzewo U = drzewo P
+    Git-->>RM: zgodne
+    RM->>PROD: wdrożenie tego samego digestu A
+```
+
 ## 6. Zsynchronizuj develop i ponów testy niewydanych zadań
 
 Po wydaniu `develop` może nadal zawierać `EF-7` i inne niewydane zadania.
@@ -219,6 +253,50 @@ git push --force-with-lease origin develop
 `reset --hard` usuwa lokalne niezapisane zmiany, a push przepisuje historię
 zdalnego `develop`. `--force-with-lease` nie zastępuje koordynacji; nie obchodź
 ochrony gałęzi. Nigdy nie resetuj ani nie wypychaj z wymuszeniem `main`.
+
+## Przypadki użycia dla programistów
+
+### Dwa zadania na DEV, tylko jedno w release
+
+`EF-6` i `EF-7` zaczynają od tego samego `origin/main`, przechodzą PR do
+`develop` i są testowane na DEV. Do `release/0.4.0` tworzysz PR **tylko z
+`feature/EF-6`**. Nie mergujesz `develop`, bo w ten sposób dołączyłoby
+również `EF-7`. Po promocji release Release Manager synchronizuje `develop`,
+a autor `EF-7` rebazuje swoją gałąź na aktualne `origin/main`, rozwiązuje
+konflikty i ponawia PR oraz testy DEV.
+
+### Poprawka odkryta podczas testów DEV
+
+Przed wydaniem nanieś poprawkę na `feature/EF-6`, a nie wyłącznie na
+`develop`. Przetestuj ją przez kolejny PR do DEV, następnie dodaj aktualną
+gałąź zadaniową PR-em do release. Jeżeli poprawka jest już tylko na
+`develop`, najpierw przenieś ją do gałęzi zadaniowej i sprawdź, czy PR do
+release nie wnosi innych zmian. Nie kopiuj całego `develop`.
+
+### Pilny błąd produkcyjny
+
+Utwórz `fix/EF-8` z aktualnego `origin/main`. Jeśli to możliwe, przetestuj
+poprawkę na DEV i przygotuj osobny release z `origin/main`, np. `release/0.4.1`.
+Przejdź ponownie przez UAT (`u0.4.1`), PR do `main`, tag `p0.4.1` i
+wdrożenie tego samego artefaktu. Nie dopisuj poprawki do istniejącego
+`p0.4.0` i nie przestawiaj jego taga. Jeśli incydent wymaga pominięcia
+którejś bramki, potrzebna jest jawna decyzja osoby odpowiedzialnej za
+wydanie oraz osobna procedura awaryjna.
+
+## Sytuacje brzegowe: rozpoznanie i reakcja
+
+| Sytuacja | Co zrobić |
+| --- | --- |
+| Zadanie zostało scalone do `develop`, a PR do release pokazuje też cudzy kod. | Sprawdź bazę gałęzi i jej historię; usuń zależność od `develop` na gałęzi zadania, powtórz review. Nie merguj `develop` do release. |
+| `git switch` zgłasza, że gałąź jest już używana przez inny worktree. | Pracuj w przypisanym worktree albo zakończ tę sesję i zwolnij worktree przed przełączeniem gałęzi w innym checkoutcie. Do samego PR przełączenie nie jest potrzebne. |
+| Po rebase gałęzi zadaniowej PR do `develop` wygląda inaczej lub push jest odrzucony. | Rebase zmienia SHA; uzgodnij go ze współautorami, sprawdź zakres PR i użyj `--force-with-lease` tylko na własnej niechronionej gałęzi. Nie wymuszaj push na `develop`. |
+| Kolejny commit trafił do `release/*` po utworzeniu `u0.4.0`. | Stary tag nadal oznacza poprzedni kandydat. Zatrzymaj promocję, nadaj nową wersję, ponów build, UAT i akceptację. |
+| Wersja `u0.4.0` lub `p0.4.0` już istnieje. | Nie nadpisuj tagu. Ustal, czy release już trwał; w razie nowego kandydata nadaj nową wersję. |
+| PR `release/* -> main` ma konflikty albo po merge drzewa plików są różne. | Nie twórz taga PROD i nie wdrażaj. Rozwiąż zmianę na release, nadaj nową wersję kandydata i ponów UAT. |
+| `main` zmienił się podczas testów UAT. | Wstrzymaj PR i porównaj drzewa; jeśli wynik różni się od UAT, przygotuj nowego kandydata. Nie zakładaj, że przejście CI zastępuje akceptację UAT. |
+| UAT się udał, ale wdrożenie PROD chce zbudować obraz ponownie. | Zablokuj deploy i zmień procedurę na promocję digestu z UAT; zgodne drzewo plików nie gwarantuje identycznego obrazu. |
+| `git push --force-with-lease` na `develop` jest odrzucony. | Ktoś zmienił gałąź lub działa jej ochrona. Nie używaj `--force`; ponownie sprawdź SHA, uzgodnij termin i uprawnienia. |
+| PROD nie przeszedł kontroli po wdrożeniu. | Zachowaj ślad nieudanego wydania i tagi. Wdróż poprzednio zaakceptowany artefakt zgodnie z procedurą operacyjną; naprawę przygotuj w nowej wersji. |
 
 ## Lista kontrolna wydania
 
