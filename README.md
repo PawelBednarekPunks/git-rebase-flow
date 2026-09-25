@@ -10,6 +10,8 @@ Nie jest to klasyczny Git Flow, w którym release powstaje z `develop`.
 > ma gałęzi `uat`, workflow CI/CD ani historycznych tagów wydań. Kroki
 > oznaczone jako **docelowe** są procedurą do wdrożenia po skonfigurowaniu
 > środowisk, uprawnień i pipeline'ów, a nie opisem działającej automatyzacji.
+> Diagram i kroki 4-5 pokazują wariant z UAT bez gałęzi `uat`. Warianty z
+> PREPROD i opcjonalną gałęzią `uat` opisano niżej.
 
 ## Mapa procesu
 
@@ -38,13 +40,14 @@ wraca na DEV ze swojej gałęzi.
 | `main` | Wydany kod produkcyjny i baza nowych zadań oraz release. |
 | `develop` | Integracja na DEV; może zawierać zadania niewydane. |
 | `feature/*`, `fix/*` | Kod zadania tworzony z aktualnego `origin/main`. |
-| `release/<wersja>` | Wybrane zadania na bazie `origin/main`; kandydat UAT. |
-| `u<wersja>` | Niezmienny anotowany tag kandydata do testów UAT. |
+| `release/<wersja>` | Wybrane zadania na bazie `origin/main`; kandydat na środowisko pośrednie. |
+| `u<wersja>` | Niezmienny anotowany tag kandydata do akceptacji UAT/PREPROD. |
 | `p<wersja>` | Niezmienny anotowany tag commita produkcyjnego na `main`. |
 
 W przykładach użyto wersji `0.4.0` (format `MAJOR.MINOR.PATCH`). Tag `u0.4.0`
-oznacza źródło artefaktu zaakceptowanego na UAT, a `p0.4.0` potwierdza
-promocję wydania do `main`. Nie twórz ich przed odpowiednimi bramkami.
+oznacza źródło artefaktu testowanego na środowisku pośrednim, a `p0.4.0`
+potwierdza promocję zaakceptowanego wydania do `main`. Nie twórz ich przed
+odpowiednimi bramkami.
 
 **SHA** identyfikuje commit, **drzewo plików** jego zawartość, a **digest
 artefaktu** konkretny zbudowany pakiet lub obraz. Dwa różne commity mogą mieć
@@ -61,10 +64,11 @@ Osoba odpowiedzialna za wydania (Release Manager) uzgadnia z DevOps:
    jego magazynowania wraz z digestem oraz SHA źródłowym (np. obraz z
    digestem w rejestrze). Deployment PROD ma wskazywać ten sam digest, a
    **nie przebudowywać** kodu po tagu `p<wersja>`.
-3. Uwierzytelnienie i uprawnienia do tworzenia tagów oraz wdrożeń na UAT
-   i PROD, a także zatwierdzanie promocji po testach UAT.
+3. Uwierzytelnienie i uprawnienia do tworzenia tagów oraz wdrożeń na wybrane
+   środowiska, a także zatwierdzanie promocji po testach akceptacyjnych.
 4. Zapis śladu wydania: wersja, PR, SHA `u` i `p`, digest artefaktu, wyniki
-   CI i testów, akceptacja UAT, status deploymentów i osoba zatwierdzająca.
+   CI i testów, akceptacja na wybranym środowisku, status deploymentów
+   i osoba zatwierdzająca.
 5. Zasadę zatrzymania wdrożenia, jeśli `main` zmienił się od utworzenia
    release lub kod zmergowanego `main` różni się od kandydata z UAT.
 
@@ -227,6 +231,113 @@ sequenceDiagram
     RM->>PROD: wdrożenie tego samego digestu A
 ```
 
+## Warianty środowiska pośredniego (docelowo)
+
+Środowisko (DEV, PREPROD, UAT, PROD) to miejsce **uruchomienia artefaktu**,
+niekoniecznie gałąź Gita. W tym repo `develop` może obsługiwać DEV, ale
+PREPROD i UAT nie wymagają osobnych gałęzi. Wybierz przepływ zależnie od
+tego, kto i co ma zatwierdzać:
+
+| Wariant | Kolejność | Bramka przed PROD |
+| --- | --- | --- |
+| Tylko UAT (przykład w krokach 4-5) | DEV → UAT → PROD | Testy akceptacyjne UAT. |
+| PREPROD przed UAT | DEV → PREPROD → UAT → PROD | Techniczne testy PREPROD, następnie akceptacja UAT. |
+| PREPROD zamiast UAT | DEV → PREPROD → PROD | Akceptacja wydania na PREPROD przez wskazane osoby. |
+
+### Zalecany wariant: deployment z taga, bez nowej gałęzi
+
+1. Zbuduj **jeden** niezmienny artefakt z `u0.4.0` na `release/0.4.0` (krok 4);
+   zapisz SHA źródła, digest i wersję. Tag nie oznacza jeszcze akceptacji.
+2. Jeśli istnieje PREPROD, wdróż tam digest i wykonaj testy techniczne
+   (integracja, konfiguracja, migracje, smoke testy). Potwierdź wynik.
+3. Jeśli istnieje UAT, wdróż **ten sam digest** na UAT i uzyskaj akceptację
+   biznesową. Jeśli UAT nie istnieje, PREPROD pełni rolę bramki akceptacji;
+   zapisz, kto wydał zgodę.
+4. Dopiero po wszystkich bramkach wykonaj PR `release/0.4.0 -> main`,
+   sprawdź zgodność drzew z tagiem `u0.4.0`, utwórz `p0.4.0` i promuj
+   **ten sam digest** na PROD (krok 5).
+
+Tag `u<wersja>` w tym wariancie identyfikuje kandydata poddanego akceptacji.
+Gdy jedynym środowiskiem pośrednim jest PREPROD, nazwa `u` jest umowna:
+ustal ją jawnie z zespołem albo przyjmij inny prefiks i zmień razem
+dokumentację oraz wyzwalacze pipeline'ów. Nie traktuj nazwy taga jako
+dowodu, że deployment UAT faktycznie istnieje.
+
+```mermaid
+flowchart LR
+    R["release/0.4.0"] --> U["tag kandydata u0.4.0"]
+    U --> A["Build raz: digest A"]
+    A --> PP["PREPROD (opcjonalnie)"]
+    A -->|"bez PREPROD"| QA
+    PP --> QA["UAT lub akceptacja na PREPROD"]
+    QA --> M["PR do main + tag p0.4.0"]
+    M -->|"ten sam digest A"| PROD["PROD"]
+```
+
+Wdrożenie tej opcji wymaga w pipeline'ie: wyzwalacza taga kandydata, magazynu
+artefaktów z niezmiennym digestem, ręcznych lub automatycznych bramek między
+środowiskami oraz joba PROD, który pobiera istniejący artefakt, zamiast
+wykonywać nowy build. Każdy deployment zapisuje wersję i digest. Sekrety
+i konfiguracja środowisk mogą się różnić, ale nie kod ani digest artefaktu.
+Jeżeli konfiguracja jest wbudowywana w artefakt przy buildzie, najpierw
+trzeba umożliwić konfigurację w czasie uruchomienia; inaczej nie można
+uczciwie deklarować promocji tego samego artefaktu.
+
+### Opcja zaawansowana: osobna gałąź `uat`
+
+Dodaj `uat` tylko wtedy, gdy potrzebna jest stała gałąź do kontroli PR i
+audytu kandydatów; samo dodatkowe środowisko nie jest wystarczającym
+powodem. **`main` pozostaje bazą** feature'ów i release'ów, a `develop`
+nie jest źródłem UAT ani release. Przed pierwszym wydaniem utwórz `uat`
+ze stanu `main` (tylko uprawniona osoba), zabezpiecz PR/review i ustal
+procedurę dla odrzuconych kandydatów:
+
+```bash
+git fetch origin --prune
+git switch --create uat origin/main
+git push --set-upstream origin uat
+```
+
+W tym wariancie **zastąp** fragmenty kroków 4-5:
+
+1. Po testach release otwórz PR `release/0.4.0 -> uat` (merge commit).
+   Upewnij się, że na `uat` nie ma żadnych wcześniejszych odrzuconych ani
+   niezakwalifikowanych zmian.
+2. Sprawdź, że drzewo plików `origin/uat` jest identyczne z
+   `origin/release/0.4.0`. Oznacz **commit `origin/uat`**, nie commit release,
+   tagiem `u0.4.0`. Wdróż jego artefakt na PREPROD/UAT i uzyskaj akceptację:
+
+   ```bash
+   git fetch origin --prune --tags
+   git diff --exit-code origin/release/0.4.0 origin/uat
+   git tag -a u0.4.0 origin/uat -m "UAT 0.4.0"
+   git push origin u0.4.0
+   ```
+
+3. Po akceptacji otwórz PR **`uat -> main` zamiast `release/* -> main`**.
+   Przed merge sprawdź, że `origin/uat` nadal wskazuje commit taga UAT i
+   nie dostał kolejnych zmian:
+
+   ```bash
+   git fetch origin --prune --tags
+   git rev-parse origin/uat
+   git rev-parse 'u0.4.0^{commit}'
+   ```
+
+   Oba SHA muszą być identyczne. Po merge wykonaj kontrolę przodka i drzew
+   z kroku 5, utwórz `p0.4.0` na `main` i wdróż **digest z UAT** na PROD.
+4. Przed kolejnym release zweryfikuj, że `uat` zawiera tylko wydany kod.
+   Jeśli UAT odrzuciło kandydata, **nie promuj `uat` do `main`**: tag zachowaj
+   jako ślad, a nowego kandydata przygotuj pod nową wersją. Wycofanie
+   odrzuconych zmian z trwałej gałęzi `uat` wymaga uzgodnionej procedury
+   administratora (np. kontrolowanej synchronizacji z `main`) albo nowej,
+   czystej gałęzi UAT. Nie wykonuj samowolnego resetu/force push.
+
+Osobny merge commit na `uat`, a potem na `main`, daje **trzy różne SHA**:
+release, tag UAT i tag PROD. Kontrole drzew oraz niezmienny digest pozostają
+obowiązkowe. Nie próbuj jednocześnie scalać `release/* -> main` i
+`uat -> main` dla tego samego wydania.
+
 ## 6. Zsynchronizuj develop i ponów testy niewydanych zadań
 
 Po wydaniu `develop` może nadal zawierać `EF-7` i inne niewydane zadania.
@@ -294,6 +405,9 @@ wydanie oraz osobna procedura awaryjna.
 | Wersja `u0.4.0` lub `p0.4.0` już istnieje. | Nie nadpisuj tagu. Ustal, czy release już trwał; w razie nowego kandydata nadaj nową wersję. |
 | PR `release/* -> main` ma konflikty albo po merge drzewa plików są różne. | Nie twórz taga PROD i nie wdrażaj. Rozwiąż zmianę na release, nadaj nową wersję kandydata i ponów UAT. |
 | `main` zmienił się podczas testów UAT. | Wstrzymaj PR i porównaj drzewa; jeśli wynik różni się od UAT, przygotuj nowego kandydata. Nie zakładaj, że przejście CI zastępuje akceptację UAT. |
+| PREPROD działa, ale UAT nie istnieje. | Ustal, kto akceptuje wydanie na PREPROD; tag `u` jest wtedy tylko umowną nazwą kandydata albo zmień jego prefiks razem z pipeline'ami. Nie deklaruj testów UAT, których nie było. |
+| Na gałęzi `uat` pozostał odrzucony kandydat. | Nie dodawaj kolejnego release na ten stan i nie otwieraj PR `uat -> main`. Najpierw przywróć czystą bazę w uzgodnionej procedurze lub użyj nowej gałęzi UAT. |
+| Artefakt wymaga innego builda dla PREPROD i PROD. | Nie nazywaj go tym samym artefaktem; przenieś konfigurację do uruchomienia lub określ osobny proces weryfikacji artefaktów przed wprowadzeniem promocji. |
 | UAT się udał, ale wdrożenie PROD chce zbudować obraz ponownie. | Zablokuj deploy i zmień procedurę na promocję digestu z UAT; zgodne drzewo plików nie gwarantuje identycznego obrazu. |
 | `git push --force-with-lease` na `develop` jest odrzucony. | Ktoś zmienił gałąź lub działa jej ochrona. Nie używaj `--force`; ponownie sprawdź SHA, uzgodnij termin i uprawnienia. |
 | PROD nie przeszedł kontroli po wdrożeniu. | Zachowaj ślad nieudanego wydania i tagi. Wdróż poprzednio zaakceptowany artefakt zgodnie z procedurą operacyjną; naprawę przygotuj w nowej wersji. |
@@ -302,10 +416,12 @@ wydanie oraz osobna procedura awaryjna.
 
 - [ ] Zakres `release/<wersja>` zawiera tylko zatwierdzone zadania, bez merge
       z `develop`; CI i regresja zakończyły się powodzeniem.
-- [ ] Tag `u<wersja>` wskazuje zamrożony release; artefakt z tego taga ma
-      zapisany digest i SHA; deployment UAT oraz testy zostały zaakceptowane.
-- [ ] PR do `main` przeszedł review i CI; tag UAT jest przodkiem commita
-      produkcyjnego, a drzewa plików obu commitów są identyczne.
+- [ ] Tag `u<wersja>` wskazuje zamrożony kandydat (release albo `uat`);
+      artefakt ma zapisany digest i SHA; wybrane środowiska pośrednie
+      przeszły testy i wymaganą akceptację.
+- [ ] PR `release/* -> main` (lub `uat -> main`) przeszedł review i CI;
+      tag kandydata jest przodkiem commita produkcyjnego, a drzewa plików
+      obu commitów są identyczne.
 - [ ] Tag `p<wersja>` wskazuje commit `main`; PROD wdrożył **ten sam digest**
       co UAT; wynik wdrożenia i kontrola powdrożeniowa są zapisane.
 - [ ] `develop` został zsynchronizowany przez uprawnioną osobę; niewydane
